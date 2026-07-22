@@ -5,6 +5,7 @@ Usage:
     reasons-service-cli ask-local <question> [--domain NAME] [--model MODEL]
     reasons-service-cli deep-search <query> [--domain NAME]
     reasons-service-cli search <query> [--domain NAME]
+    reasons-service-cli beliefs [--domain NAME] [--status IN|OUT]
     reasons-service-cli domains
     reasons-service-cli explain <belief-id> [--domain NAME]
     reasons-service-cli import-reasons <path> --name NAME [--description DESC]
@@ -243,6 +244,34 @@ def cmd_search(args: list[str]):
         print("No results.")
 
 
+def cmd_beliefs(args: list[str]):
+    status = None
+    if "--status" in args:
+        idx = args.index("--status")
+        if idx + 1 < len(args):
+            status = args[idx + 1].upper()
+            del args[idx:idx + 2]
+        else:
+            print("Error: --status requires a value (IN or OUT)")
+            sys.exit(1)
+
+    domain_id = _get_domain(args)
+    result = client.list_beliefs(domain_id, status=status)
+
+    beliefs = result if isinstance(result, list) else result.get("beliefs", result.get("nodes", []))
+    if not beliefs:
+        print("No beliefs found.")
+        return
+
+    for b in beliefs:
+        tv = b.get("truth_value", "?")
+        node_id = b.get("id", b.get("node_id", "?"))
+        text = b.get("text", "")[:100]
+        print(f"  [{tv}] {node_id}: {text}")
+
+    print(f"\n{len(beliefs)} beliefs")
+
+
 def cmd_domains(_args: list[str]):
     domains = client.list_domains()
     if not domains:
@@ -394,6 +423,7 @@ def main():
         "ask": cmd_ask,
         "ask-local": cmd_ask_local,
         "deep-search": cmd_deep_search,
+        "beliefs": cmd_beliefs,
         "explain": cmd_explain,
         "search": cmd_search,
         "domains": cmd_domains,
