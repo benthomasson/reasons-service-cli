@@ -160,6 +160,17 @@ def list_beliefs(domain_id: str, status: str | None = None) -> dict:
     return resp.json()
 
 
+def list_issues(domain_id: str) -> dict:
+    """Find issues: gated beliefs and negative candidates."""
+    resp = httpx.get(
+        f"{_base_url()}/api/domains/{domain_id}/issues",
+        headers=_headers(),
+        timeout=TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def list_entries(domain_id: str, topic: str | None = None) -> list[dict]:
     """List entries for a domain."""
     params = {}
