@@ -1,12 +1,18 @@
-"""Google OAuth login for reasons-service CLI.
+"""OAuth login for reasons-service CLI.
 
-Browser-based OAuth flow with localhost callback. Caches the ID token
-and refresh token to ~/.config/reasons-service/token.json. The ID token is sent
-as a Bearer header to reasons-service, which verifies it with Google
-and looks up the user for RBAC.
+Two login flows, tried in order:
 
-Requires GOOGLE_CLIENT_ID (and optionally GOOGLE_CLIENT_SECRET) to be
-set, or configured in ~/.config/reasons-service/config.toml.
+1. **MCP OAuth discovery** (default) — no local credentials needed.
+   The CLI discovers the server's OAuth endpoints via
+   /.well-known/oauth-authorization-server, dynamically registers as a
+   client, and goes through the server's authorize flow (which delegates
+   to Google). The server issues MCP access/refresh tokens.
+
+2. **Direct Google OAuth** (fallback) — used when google_client_id is
+   configured locally. The CLI talks to Google directly and gets an
+   ID token that reasons-service verifies.
+
+Tokens are cached at ~/.config/reasons-service/token.json.
 """
 
 import hashlib
@@ -61,25 +67,33 @@ def _is_valid(token: dict) -> bool:
     return time.time() < expires_at - REFRESH_BUFFER_SECS
 
 
-def get_id_token() -> str | None:
-    """Get a valid ID token, refreshing if needed. Returns None if no token."""
+def _get_bearer_token(token: dict) -> str | None:
+    """Extract the bearer token from a saved token dict (MCP or Google)."""
+    return token.get("access_token") or token.get("id_token")
+
+
+def get_token() -> str | None:
+    """Get a valid bearer token, refreshing if needed. Returns None if no token."""
     token = _load_token()
     if not token:
         return None
 
     if _is_valid(token):
-        return token.get("id_token")
+        return _get_bearer_token(token)
 
-    # Try refresh
     new_token = _refresh_token(token)
     if new_token:
         _save_token(new_token)
-        return new_token.get("id_token")
+        return _get_bearer_token(new_token)
 
     return None
 
 
-# --- OAuth helpers ---
+# Keep old name as alias for client.py compatibility
+get_id_token = get_token
+
+
+# --- PKCE ---
 
 
 def _generate_pkce() -> tuple[str, str]:
@@ -93,9 +107,115 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _exchange_code(code: str, verifier: str, client_id: str,
-                   client_secret: str, redirect_uri: str) -> dict:
-    """Exchange authorization code for tokens."""
+# --- MCP OAuth discovery flow ---
+
+
+def _discover_oauth(server_url: str) -> dict | None:
+    """Fetch OAuth metadata from the server. Returns None if not available."""
+    url = server_url.rstrip("/")
+    try:
+        resp = httpx.get(f"{url}/.well-known/oauth-authorization-server", timeout=10.0)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return None
+
+
+def _register_client(registration_endpoint: str, redirect_uri: str) -> dict:
+    """Dynamically register as an OAuth client."""
+    resp = httpx.post(
+        registration_endpoint,
+        json={
+            "client_name": "reasons-service-cli",
+            "redirect_uris": [redirect_uri],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        },
+        timeout=10.0,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Client registration failed ({resp.status_code}): {resp.text[:300]}")
+    return resp.json()
+
+
+def _mcp_exchange_code(token_endpoint: str, code: str, verifier: str,
+                       client_id: str, redirect_uri: str) -> dict:
+    """Exchange an MCP authorization code for tokens."""
+    resp = httpx.post(
+        token_endpoint,
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": verifier,
+            "client_id": client_id,
+        },
+        timeout=30.0,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Token exchange failed ({resp.status_code}): {resp.text[:300]}")
+
+    token = resp.json()
+    if "expires_in" in token:
+        token["expires_at"] = time.time() + token["expires_in"]
+    token["client_id"] = client_id
+    token["token_endpoint"] = token_endpoint
+    token["flow"] = "mcp"
+    return token
+
+
+def _mcp_login(server_url: str, port: int) -> dict:
+    """Run the MCP OAuth discovery login flow. Returns token dict."""
+    metadata = _discover_oauth(server_url)
+    if not metadata:
+        raise RuntimeError("Server does not support OAuth discovery")
+
+    auth_endpoint = metadata["authorization_endpoint"]
+    token_endpoint = metadata["token_endpoint"]
+    reg_endpoint = metadata.get("registration_endpoint")
+
+    if not reg_endpoint:
+        raise RuntimeError("Server does not support dynamic client registration")
+
+    redirect_uri = f"http://localhost:{port}/callback"
+
+    # Dynamic client registration
+    print("Registering with server...")
+    client_info = _register_client(reg_endpoint, redirect_uri)
+    client_id = client_info["client_id"]
+
+    # PKCE
+    verifier, challenge = _generate_pkce()
+    state = secrets.token_urlsafe(32)
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    auth_url = f"{auth_endpoint}?{urlencode(params)}"
+
+    print("Opening browser for login...")
+    webbrowser.open(auth_url, new=2)
+
+    code = _run_callback_server(port, state)
+    print("Authorization code received.")
+
+    token = _mcp_exchange_code(token_endpoint, code, verifier, client_id, redirect_uri)
+    return token
+
+
+# --- Direct Google OAuth flow (fallback) ---
+
+
+def _google_exchange_code(code: str, verifier: str, client_id: str,
+                          client_secret: str, redirect_uri: str) -> dict:
+    """Exchange authorization code for Google tokens."""
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -114,34 +234,109 @@ def _exchange_code(code: str, verifier: str, client_id: str,
     if "expires_in" in token:
         token["expires_at"] = time.time() + token["expires_in"]
     token["client_id"] = client_id
+    token["flow"] = "google"
     if client_secret:
         token["client_secret"] = client_secret
     return token
 
 
+def _google_login(client_id: str, client_secret: str, port: int) -> dict:
+    """Run the direct Google OAuth login flow. Returns token dict."""
+    redirect_uri = f"http://localhost:{port}/callback"
+    verifier, challenge = _generate_pkce()
+    state = secrets.token_urlsafe(32)
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "scope": GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+
+    print("Opening browser for Google login...")
+    webbrowser.open(auth_url, new=2)
+
+    code = _run_callback_server(port, state)
+    print("Authorization code received.")
+
+    return _google_exchange_code(code, verifier, client_id, client_secret, redirect_uri)
+
+
+# --- Token refresh ---
+
+
 def _refresh_token(token: dict) -> dict | None:
-    """Refresh an expired token. Returns new token or None."""
+    """Refresh an expired token. Handles both MCP and Google tokens."""
     refresh = token.get("refresh_token")
     client_id = token.get("client_id")
     if not refresh or not client_id:
         return None
 
+    flow = token.get("flow", "google")
+
+    if flow == "mcp":
+        token_endpoint = token.get("token_endpoint")
+        if not token_endpoint:
+            return None
+        return _mcp_refresh(token_endpoint, client_id, refresh)
+    else:
+        client_secret = token.get("client_secret", "")
+        return _google_refresh(client_id, client_secret, refresh)
+
+
+def _mcp_refresh(token_endpoint: str, client_id: str, refresh: str) -> dict | None:
+    """Refresh an MCP token."""
+    try:
+        resp = httpx.post(
+            token_endpoint,
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": refresh,
+            },
+            timeout=30.0,
+        )
+        if resp.status_code != 200:
+            logger.warning("MCP refresh failed (%d), need re-login", resp.status_code)
+            return None
+        new_token = resp.json()
+        new_token["client_id"] = client_id
+        new_token["token_endpoint"] = token_endpoint
+        new_token["flow"] = "mcp"
+        if "refresh_token" not in new_token:
+            new_token["refresh_token"] = refresh
+        if "expires_at" not in new_token and "expires_in" in new_token:
+            new_token["expires_at"] = time.time() + new_token["expires_in"]
+        return new_token
+    except Exception as e:
+        logger.warning("MCP refresh error: %s", e)
+        return None
+
+
+def _google_refresh(client_id: str, client_secret: str, refresh: str) -> dict | None:
+    """Refresh a Google token."""
     data = {
         "grant_type": "refresh_token",
         "client_id": client_id,
         "refresh_token": refresh,
     }
-    client_secret = token.get("client_secret", "")
     if client_secret:
         data["client_secret"] = client_secret
 
     try:
         resp = httpx.post(GOOGLE_TOKEN_URL, data=data, timeout=30.0)
         if resp.status_code != 200:
-            logger.warning("Refresh failed (%d), need re-login", resp.status_code)
+            logger.warning("Google refresh failed (%d), need re-login", resp.status_code)
             return None
         new_token = resp.json()
         new_token["client_id"] = client_id
+        new_token["flow"] = "google"
         if client_secret:
             new_token["client_secret"] = client_secret
         if "refresh_token" not in new_token:
@@ -150,7 +345,7 @@ def _refresh_token(token: dict) -> dict | None:
             new_token["expires_at"] = time.time() + new_token["expires_in"]
         return new_token
     except Exception as e:
-        logger.warning("Refresh error: %s", e)
+        logger.warning("Google refresh error: %s", e)
         return None
 
 
@@ -258,7 +453,8 @@ def check_token() -> bool:
         return False
     if _is_valid(token):
         remaining = (token.get("expires_at", 0) - time.time()) / 60
-        print(f"Authenticated ({remaining:.0f} minutes remaining)")
+        flow = token.get("flow", "google")
+        print(f"Authenticated via {flow} ({remaining:.0f} minutes remaining)")
         return True
     print("Token expired, attempting refresh...")
     new_token = _refresh_token(token)
@@ -278,14 +474,14 @@ def _verify_against_server(token: dict) -> bool:
     if not url:
         return True
 
-    id_token = token.get("id_token")
-    if not id_token:
+    bearer = _get_bearer_token(token)
+    if not bearer:
         return False
 
     try:
         resp = httpx.get(
             f"{url}/api/domains",
-            headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {bearer}"},
             timeout=5.0,
         )
         return resp.status_code == 200
@@ -296,17 +492,15 @@ def _verify_against_server(token: dict) -> bool:
 
 
 def login(port: int = 8085, force: bool = False) -> None:
-    """Run the full Google OAuth browser login flow."""
+    """Login to reasons-service.
+
+    Tries MCP OAuth discovery first (no local credentials needed).
+    Falls back to direct Google OAuth if google_client_id is configured.
+    """
     config = load_config()
-    client_id = config.get("google_client_id", "")
-    client_secret = config.get("google_client_secret", "")
+    server_url = config.get("url", "").rstrip("/")
 
-    if not client_id:
-        print("Error: google_client_id not set in config or GOOGLE_CLIENT_ID env var.")
-        print("Add to ~/.config/reasons-service/config.toml:")
-        print('  google_client_id = "your-client-id.apps.googleusercontent.com"')
-        return
-
+    # Check existing token first (skip if --force)
     token = _load_token()
     if token and not force:
         if _is_valid(token):
@@ -315,8 +509,7 @@ def login(port: int = 8085, force: bool = False) -> None:
                 print(f"Already authenticated ({remaining:.0f} minutes remaining)")
                 return
             else:
-                url = config.get("url", "")
-                print(f"Token not accepted by {url}, starting browser login...")
+                print(f"Token not accepted by {server_url}, starting login...")
         else:
             print("Token expired, trying refresh...")
             new_token = _refresh_token(token)
@@ -327,37 +520,32 @@ def login(port: int = 8085, force: bool = False) -> None:
                     print(f"Token refreshed ({remaining:.0f} minutes remaining)")
                     return
                 else:
-                    url = config.get("url", "")
-                    print(f"Refreshed token not accepted by {url}, starting browser login...")
+                    print(f"Refreshed token not accepted by {server_url}, starting login...")
             else:
-                print("Refresh failed, starting browser login...")
+                print("Refresh failed, starting login...")
     elif force:
         print("Forcing re-login...")
 
-    redirect_uri = f"http://localhost:{port}/callback"
+    # Try MCP OAuth discovery first
+    if server_url:
+        metadata = _discover_oauth(server_url)
+        if metadata:
+            token = _mcp_login(server_url, port)
+            _save_token(token)
+            print("Login complete.")
+            return
 
-    verifier, challenge = _generate_pkce()
+    # Fall back to direct Google OAuth
+    client_id = config.get("google_client_id", "")
+    if not client_id:
+        if not server_url:
+            print("Error: no server URL configured. Set REASONS_URL or run `reasons-service-cli init`.")
+        else:
+            print(f"Error: server at {server_url} does not support OAuth discovery,")
+            print("and no google_client_id is configured for direct login.")
+        return
 
-    state = secrets.token_urlsafe(32)
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "scope": GOOGLE_SCOPES,
-        "access_type": "offline",
-        "prompt": "consent",
-    }
-    auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
-
-    print("Opening browser for Google login...")
-    webbrowser.open(auth_url, new=2)
-
-    code = _run_callback_server(port, state)
-    print("Authorization code received.")
-
-    token = _exchange_code(code, verifier, client_id, client_secret, redirect_uri)
+    client_secret = config.get("google_client_secret", "")
+    token = _google_login(client_id, client_secret, port)
     _save_token(token)
     print("Login complete.")

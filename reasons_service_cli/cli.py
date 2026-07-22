@@ -289,11 +289,8 @@ def cmd_status(_args: list[str]):
         print("Auth: anonymous (public domains only)")
     elif config["api_key"]:
         print("Auth: static API key")
-    elif config["google_client_id"]:
-        print("Auth: Google OAuth")
-        check_token()
     else:
-        print("Auth: none configured")
+        check_token()
     if config["project"]:
         print(f"Default domain: {config['project']}")
     local = _find_local_config()

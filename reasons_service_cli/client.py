@@ -33,10 +33,10 @@ def _headers() -> dict[str, str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     else:
-        from .auth import get_id_token
-        id_token = get_id_token()
-        if id_token:
-            headers["Authorization"] = f"Bearer {id_token}"
+        from .auth import get_token
+        token = get_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
