@@ -199,9 +199,9 @@ def cmd_issues(args: argparse.Namespace):
 
     print(f"=== Gated Beliefs ({gated_count} gated by {blocker_count} blockers) ===\n")
     for blocker_id, info in blockers.items():
-        print(f"  [IN] {blocker_id}: {info.get('text', '')[:100]}")
+        print(f"  Blocker: [IN] {blocker_id}: {info.get('text', '')[:100]}")
         for g in info.get("gated", []):
-            print(f"    [OUT] {g['id']}: {g.get('text', '')[:100]}")
+            print(f"    Blocks: [OUT] {g['id']}: {g.get('text', '')[:100]}")
 
 
 def cmd_search(args: argparse.Namespace):
