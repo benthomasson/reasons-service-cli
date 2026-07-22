@@ -285,12 +285,13 @@ def cmd_status(_args: list[str]):
         print(f"URL: {url}")
     else:
         print("URL: not configured (set REASONS_URL or run `reasons-service-cli init`)")
-    if config.get("anonymous"):
-        print("Auth: anonymous (public domains only)")
-    elif config["api_key"]:
+    if config["api_key"]:
         print("Auth: static API key")
-    else:
-        check_token()
+    elif not check_token():
+        if config.get("anonymous"):
+            print("Auth: anonymous (public domains only)")
+        else:
+            print("Auth: none configured")
     if config["project"]:
         print(f"Default domain: {config['project']}")
     local = _find_local_config()

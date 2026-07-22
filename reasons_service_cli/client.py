@@ -26,8 +26,6 @@ def _base_url() -> str:
 
 def _headers() -> dict[str, str]:
     config = _get_config()
-    if config.get("anonymous"):
-        return {}
     headers = {}
     api_key = config["api_key"]
     if api_key:
@@ -63,13 +61,13 @@ def resolve_domain(name_or_id: str) -> str:
     if len(name_or_id) == 36 and name_or_id.count("-") == 4:
         return name_or_id
 
-    if _get_config().get("anonymous"):
-        resp = httpx.get(
-            f"{_base_url()}/api/domains/resolve",
-            params={"name": name_or_id},
-            timeout=TIMEOUT,
-        )
-        resp.raise_for_status()
+    resp = httpx.get(
+        f"{_base_url()}/api/domains/resolve",
+        params={"name": name_or_id},
+        headers=_headers(),
+        timeout=TIMEOUT,
+    )
+    if resp.status_code == 200:
         return resp.json()["id"]
 
     domains = list_domains()
