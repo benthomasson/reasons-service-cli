@@ -188,36 +188,22 @@ def cmd_issues(args: argparse.Namespace):
     domain_id = _resolve_domain(args)
     result = client.list_issues(domain_id)
 
-    gated = result.get("gated", {})
-    negative = result.get("negative", {})
-
+    gated = result.get("gated", result)
     gated_nodes = gated.get("gated", gated.get("nodes", []))
-    neg_candidates = negative.get("candidates", [])
 
-    if gated_nodes:
-        print(f"=== Gated Beliefs ({len(gated_nodes)}) ===")
-        print("OUT beliefs blocked by IN outlist nodes:\n")
-        for g in gated_nodes:
-            node_id = g.get("id", g.get("node_id", "?"))
-            text = g.get("text", "")[:100]
-            print(f"  {node_id}: {text}")
-            for blocker in g.get("blockers", g.get("gates", [])):
-                b_id = blocker if isinstance(blocker, str) else blocker.get("id", "?")
-                print(f"    blocked by: {b_id}")
+    if not gated_nodes:
+        print("No gated beliefs found.")
+        return
 
-    if neg_candidates:
-        if gated_nodes:
-            print()
-        total_in = negative.get("total_in", "?")
-        print(f"=== Negative Candidates ({len(neg_candidates)}/{total_in} IN beliefs) ===")
-        print("IN beliefs with negative sentiment:\n")
-        for c in neg_candidates:
-            node_id = c.get("id", "?")
-            text = c.get("text", "")[:100]
-            print(f"  {node_id}: {text}")
-
-    if not gated_nodes and not neg_candidates:
-        print("No issues found.")
+    print(f"=== Gated Beliefs ({len(gated_nodes)}) ===")
+    print("OUT beliefs blocked by IN outlist nodes:\n")
+    for g in gated_nodes:
+        node_id = g.get("id", g.get("node_id", "?"))
+        text = g.get("text", "")[:100]
+        print(f"  {node_id}: {text}")
+        for blocker in g.get("blockers", g.get("gates", [])):
+            b_id = blocker if isinstance(blocker, str) else blocker.get("id", "?")
+            print(f"    blocked by: {b_id}")
 
 
 def cmd_search(args: argparse.Namespace):
@@ -427,7 +413,7 @@ def main():
 
     sub.add_parser("domains", help="List all available domains")
 
-    sub.add_parser("issues", parents=[domain_parent], help="Find gated beliefs and negative candidates")
+    sub.add_parser("issues", parents=[domain_parent], help="Find gated beliefs (OUT nodes blocked by IN outlist)")
 
     p = sub.add_parser("show", parents=[domain_parent], help="Show full details for a belief")
     p.add_argument("belief_id", nargs="+", help="belief node ID")
