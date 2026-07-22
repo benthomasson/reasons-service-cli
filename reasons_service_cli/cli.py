@@ -189,21 +189,19 @@ def cmd_issues(args: argparse.Namespace):
     result = client.list_issues(domain_id)
 
     gated = result.get("gated", result)
-    gated_nodes = gated.get("gated", gated.get("nodes", []))
+    blockers = gated.get("blockers", {})
+    gated_count = gated.get("gated_count", 0)
+    blocker_count = gated.get("blocker_count", len(blockers))
 
-    if not gated_nodes:
+    if not blockers:
         print("No gated beliefs found.")
         return
 
-    print(f"=== Gated Beliefs ({len(gated_nodes)}) ===")
-    print("OUT beliefs blocked by IN outlist nodes:\n")
-    for g in gated_nodes:
-        node_id = g.get("id", g.get("node_id", "?"))
-        text = g.get("text", "")[:100]
-        print(f"  {node_id}: {text}")
-        for blocker in g.get("blockers", g.get("gates", [])):
-            b_id = blocker if isinstance(blocker, str) else blocker.get("id", "?")
-            print(f"    blocked by: {b_id}")
+    print(f"=== Gated Beliefs ({gated_count} gated by {blocker_count} blockers) ===\n")
+    for blocker_id, info in blockers.items():
+        print(f"  [IN] {blocker_id}: {info.get('text', '')[:100]}")
+        for g in info.get("gated", []):
+            print(f"    [OUT] {g['id']}: {g.get('text', '')[:100]}")
 
 
 def cmd_search(args: argparse.Namespace):
