@@ -34,6 +34,31 @@ from . import client
 from .config import load_config
 
 
+HELP = {
+    "ask": "Usage: reasons-service-cli ask <question> [--domain NAME] [--model MODEL]\n\nAsk a question against a domain. Falls back to local LLM if server is data-only.",
+    "ask-local": "Usage: reasons-service-cli ask-local <question> [--domain NAME] [--model MODEL]\n\nRetrieve from server and synthesize answer with a local LLM.",
+    "deep-search": "Usage: reasons-service-cli deep-search <query> [--domain NAME]\n\nDual-path retrieval with IDF ranking across beliefs and source documents.",
+    "search": "Usage: reasons-service-cli search <query> [--domain NAME]\n\nSearch beliefs, entries, and source documents.",
+    "beliefs": "Usage: reasons-service-cli beliefs [--domain NAME] [--status IN|OUT]\n\nList all beliefs in a domain, optionally filtered by truth value.",
+    "domains": "Usage: reasons-service-cli domains\n\nList all available domains.",
+    "explain": "Usage: reasons-service-cli explain <belief-id> [--domain NAME]\n\nExplain why a belief is IN or OUT, showing justifications and dependents.",
+    "login": "Usage: reasons-service-cli login [--force] [--port PORT]\n\nAuthenticate via MCP OAuth (browser flow). Use --force to re-login.",
+    "logout": "Usage: reasons-service-cli logout\n\nClear cached credentials.",
+    "status": "Usage: reasons-service-cli status\n\nShow current configuration and authentication status.",
+    "init": "Usage: reasons-service-cli init\n\nCreate global config at ~/.config/reasons-service/config.toml.",
+    "install-skill": "Usage: reasons-service-cli install-skill [--skill-dir DIR]\n\nInstall the Claude Code skill definition for reasons-service.",
+    "import-reasons": "Usage: reasons-service-cli import-reasons <path> --name NAME [--description DESC]\n\nUpload a reasons.db file to create a new domain with beliefs.",
+    "mcp": "Usage: reasons-service-cli mcp\n\nStart the MCP server (for Claude Code / Claude Desktop integration).",
+}
+
+
+def _check_help(command: str, args: list[str]) -> bool:
+    if "--help" in args or "-h" in args:
+        print(HELP.get(command, f"No help available for '{command}'."))
+        return True
+    return False
+
+
 def _get_domain(args: list[str]) -> str:
     """Extract --domain from args or fall back to REASONS_PROJECT env var."""
     domain = None
@@ -70,6 +95,8 @@ def _get_model(args: list[str]) -> str | None:
 
 
 def cmd_ask(args: list[str]):
+    if _check_help("ask", args):
+        return
     model = _get_model(args)
     domain_id = _get_domain(args)
     question = " ".join(args)
@@ -122,6 +149,8 @@ def _ask_local(domain_id: str, question: str, model: str | None):
 
 
 def cmd_ask_local(args: list[str]):
+    if _check_help("ask-local", args):
+        return
     model = _get_model(args)
     domain_id = _get_domain(args)
     question = " ".join(args)
@@ -133,6 +162,8 @@ def cmd_ask_local(args: list[str]):
 
 
 def cmd_deep_search(args: list[str]):
+    if _check_help("deep-search", args):
+        return
     domain_id = _get_domain(args)
     query = " ".join(args)
     if not query:
@@ -161,6 +192,8 @@ def cmd_deep_search(args: list[str]):
 
 
 def cmd_explain(args: list[str]):
+    if _check_help("explain", args):
+        return
     domain_id = _get_domain(args)
     node_id = " ".join(args)
     if not node_id:
@@ -201,6 +234,8 @@ def cmd_explain(args: list[str]):
 
 
 def cmd_search(args: list[str]):
+    if _check_help("search", args):
+        return
     domain_id = _get_domain(args)
     query = " ".join(args)
     if not query:
@@ -245,6 +280,8 @@ def cmd_search(args: list[str]):
 
 
 def cmd_beliefs(args: list[str]):
+    if _check_help("beliefs", args):
+        return
     status = None
     if "--status" in args:
         idx = args.index("--status")
@@ -273,6 +310,8 @@ def cmd_beliefs(args: list[str]):
 
 
 def cmd_domains(_args: list[str]):
+    if _check_help("domains", _args):
+        return
     domains = client.list_domains()
     if not domains:
         print("No domains.")
@@ -286,6 +325,8 @@ def cmd_domains(_args: list[str]):
 
 
 def cmd_login(args: list[str]):
+    if _check_help("login", args):
+        return
     from .auth import login
     port = 8085
     force = "--force" in args
@@ -297,6 +338,8 @@ def cmd_login(args: list[str]):
 
 
 def cmd_logout(_args: list[str]):
+    if _check_help("logout", _args):
+        return
     from .auth import TOKEN_FILE
     if TOKEN_FILE.exists():
         TOKEN_FILE.unlink()
@@ -306,6 +349,8 @@ def cmd_logout(_args: list[str]):
 
 
 def cmd_status(_args: list[str]):
+    if _check_help("status", _args):
+        return
     from .auth import check_token
     from .config import _find_local_config
     config = load_config()
@@ -329,6 +374,8 @@ def cmd_status(_args: list[str]):
 
 
 def cmd_install_skill(_args: list[str]):
+    if _check_help("install-skill", _args):
+        return
     from pathlib import Path
     import shutil
 
@@ -356,7 +403,8 @@ def cmd_install_skill(_args: list[str]):
 
 
 def cmd_import_reasons(args: list[str]):
-    """Import a reasons.db file to create a new domain with beliefs."""
+    if _check_help("import-reasons", args):
+        return
     name = None
     description = ""
 
@@ -402,19 +450,23 @@ def cmd_import_reasons(args: list[str]):
 
 
 def cmd_init(_args: list[str]):
+    if _check_help("init", _args):
+        return
     from .config import init_config
     init_config()
 
 
 def cmd_mcp(_args: list[str]):
+    if _check_help("mcp", _args):
+        return
     from .mcp_server import main
     main()
 
 
 def main():
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
         print(__doc__)
-        sys.exit(1)
+        sys.exit(0)
 
     command = sys.argv[1]
     args = sys.argv[2:]
