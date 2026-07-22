@@ -93,6 +93,60 @@ def cmd_deep_search(args: argparse.Namespace):
         print("No results.")
 
 
+def cmd_show(args: argparse.Namespace):
+    domain_id = _resolve_domain(args)
+    node_id = " ".join(args.belief_id)
+
+    belief = client.get_belief(domain_id, node_id)
+    if belief.get("error"):
+        print(f"Error: {belief['error']}")
+        sys.exit(1)
+
+    tv = belief.get("truth_value", "?")
+    print(f"[{tv}] {node_id}")
+    print(f"  {belief.get('text', '')}")
+
+    if belief.get("source"):
+        print(f"  Source: {belief['source']}")
+    if belief.get("source_url"):
+        print(f"  URL: {belief['source_url']}")
+
+    meta = belief.get("metadata", {})
+    if meta:
+        for k, v in meta.items():
+            print(f"  {k}: {v}")
+
+    if belief.get("created_at"):
+        print(f"  Created: {belief['created_at']}")
+    if belief.get("updated_at") and belief["updated_at"] != belief.get("created_at"):
+        print(f"  Updated: {belief['updated_at']}")
+    if belief.get("reviewed_at"):
+        print(f"  Reviewed: {belief['reviewed_at']}")
+    if belief.get("verified_at"):
+        print(f"  Verified: {belief['verified_at']}")
+    if belief.get("retracted_at"):
+        print(f"  Retracted: {belief['retracted_at']}")
+
+    justifications = belief.get("justifications", [])
+    if justifications:
+        print(f"\nJustifications ({len(justifications)}):")
+        for j in justifications:
+            jtype = j.get("type", "?")
+            label = j.get("label", "")
+            print(f"  [{jtype}] {label}")
+            for a in j.get("antecedents", []):
+                print(f"    + {a}")
+            for o in j.get("outlist", []):
+                print(f"    - {o}")
+
+    dependents = belief.get("dependents", [])
+    if dependents:
+        print(f"\nDependents ({len(dependents)}):")
+        for d in dependents:
+            dep_id = d if isinstance(d, str) else d.get("id", "?")
+            print(f"  {dep_id}")
+
+
 def cmd_explain(args: argparse.Namespace):
     domain_id = _resolve_domain(args)
     node_id = " ".join(args.belief_id)
@@ -337,6 +391,9 @@ def main():
 
     sub.add_parser("domains", help="List all available domains")
 
+    p = sub.add_parser("show", parents=[domain_parent], help="Show full details for a belief")
+    p.add_argument("belief_id", nargs="+", help="belief node ID")
+
     p = sub.add_parser("explain", parents=[domain_parent], help="Explain why a belief is IN or OUT")
     p.add_argument("belief_id", nargs="+", help="belief node ID")
 
@@ -368,6 +425,7 @@ def main():
         "ask-local": cmd_ask_local,
         "deep-search": cmd_deep_search,
         "beliefs": cmd_beliefs,
+        "show": cmd_show,
         "explain": cmd_explain,
         "search": cmd_search,
         "domains": cmd_domains,
